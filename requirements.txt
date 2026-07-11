@@ -1,5 +1,8 @@
 pandas
 numpy
-langchain-ollama
+langchain-groq
 langgraph
+python-dotenv
+pypdf
+python-docx
 -e .

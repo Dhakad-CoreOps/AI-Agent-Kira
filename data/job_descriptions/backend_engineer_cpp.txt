@@ -1,0 +1,17 @@
+Backend Engineer (C++)
+
+We are hiring a Backend Engineer to work on our low-latency trading infrastructure.
+
+REQUIREMENTS
+- Strong modern C++ (14/17), including memory management, RAII, move semantics
+  and smart pointers.
+- Solid Data Structures & Algorithms fundamentals with an ability to reason about
+  time/space complexity trade-offs in production code.
+- Hands-on experience with concurrency: threads, locks, lock-free structures.
+- Comfortable on Linux; profiling and debugging native code.
+- Experience designing and operating distributed systems on AWS.
+- Familiarity with relational databases and caching strategies at scale.
+
+NICE TO HAVE
+- Python for tooling and automation.
+- Exposure to Kubernetes and CI/CD pipelines.

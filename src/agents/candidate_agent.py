@@ -7,34 +7,50 @@ Handles two execution paths driven by the shared graph state:
                              strengths, gaps, hire/no-hire recommendation).
 2. INTERVIEW PREPARATION  -> 3 customized deep-technical interview questions.
 
-Runs fully locally against an Ollama server (no API keys required).
+Uses Groq's free API (GROQ_API_KEY loaded from the project .env file).
 """
 
+import os
 import sys
 from typing import Literal, Optional, TypedDict
 
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama
+from langchain_groq import ChatGroq
 
 from src.exception import CustomException
 from src.logger import logging
 from src.tools.file_reader import file_reader
 
 # ---------------------------------------------------------------------------
-# LLM configuration (local CPU inference via Ollama — no API keys)
+# LLM configuration (Groq free tier — key comes from .env, never hardcoded)
 # ---------------------------------------------------------------------------
-OLLAMA_MODEL = "llama3.2:3b"
-OLLAMA_BASE_URL = "http://localhost:11434"
+load_dotenv()
 
-llm = ChatOllama(
-    model=OLLAMA_MODEL,
-    base_url=OLLAMA_BASE_URL,
+GROQ_MODEL = "llama-3.1-8b-instant"
+
+# Default document locations, resolved from the project root so they work no
+# matter which directory Python is launched from.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+RESUME_DIR = os.path.join(DATA_DIR, "resumes")
+JOB_DESCRIPTION_DIR = os.path.join(DATA_DIR, "job_descriptions")
+
+if not os.getenv("GROQ_API_KEY"):
+    logging.error("GROQ_API_KEY is missing from the environment/.env file")
+    raise EnvironmentError(
+        "GROQ_API_KEY is not set. Add it to the .env file in the project root "
+        "(get a free key at https://console.groq.com/keys)."
+    )
+
+llm = ChatGroq(
+    model=GROQ_MODEL,
     temperature=0.2,
 )
 
 # The agent is equipped with the file_reader tool. The node below invokes it
-# deterministically whenever the state carries a document_path, which is far
-# more reliable on a small local model than LLM-driven tool calling.
+# deterministically whenever the state carries a document_path, which is more
+# reliable for this fixed workflow than LLM-driven tool calling.
 TOOLS = [file_reader]
 llm_with_tools = llm.bind_tools(TOOLS)
 
@@ -45,6 +61,7 @@ llm_with_tools = llm.bind_tools(TOOLS)
 class CandidateAgentState(TypedDict, total=False):
     user_query: str
     document_path: Optional[str]
+    job_description_path: Optional[str]
     job_description: Optional[str]
     task_type: Literal["resume_screening", "interview_preparation"]
     resume_text: str
@@ -128,7 +145,7 @@ def _detect_task_type(user_query: str) -> str:
     return "resume_screening"
 
 
-def _build_human_message(state: CandidateAgentState, resume_text: str) -> str:
+def _build_human_message(state: CandidateAgentState, resume_text: str, job_description: str) -> str:
     sections = [f"USER REQUEST:\n{state.get('user_query', '')}"]
 
     if resume_text:
@@ -136,7 +153,6 @@ def _build_human_message(state: CandidateAgentState, resume_text: str) -> str:
     else:
         sections.append("CANDIDATE RESUME:\n(No resume text was provided.)")
 
-    job_description = state.get("job_description")
     if job_description:
         sections.append(f"JOB DESCRIPTION:\n{job_description}")
 
@@ -154,14 +170,20 @@ def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
         user_query = state.get("user_query", "")
         document_path = state.get("document_path")
         resume_text = state.get("resume_text", "")
+        job_description_path = state.get("job_description_path")
+        job_description = state.get("job_description", "")
 
         logging.info(f"Candidate Agent invoked. Query: {user_query!r}, document_path: {document_path!r}")
 
-        # Load the document through the file_reader tool when a path is provided
+        # Load the documents through the file_reader tool when paths are provided
         # and the text has not already been extracted by an upstream node.
         if document_path and not resume_text:
-            logging.info(f"Candidate Agent invoking file_reader tool for: {document_path}")
+            logging.info(f"Candidate Agent invoking file_reader tool for resume: {document_path}")
             resume_text = file_reader.invoke({"file_path": document_path})
+
+        if job_description_path and not job_description:
+            logging.info(f"Candidate Agent invoking file_reader tool for job description: {job_description_path}")
+            job_description = file_reader.invoke({"file_path": job_description_path})
 
         task_type = state.get("task_type") or _detect_task_type(user_query)
         logging.info(f"Candidate Agent execution path: {task_type}")
@@ -174,7 +196,7 @@ def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
 
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=_build_human_message(state, resume_text)),
+            HumanMessage(content=_build_human_message(state, resume_text, job_description)),
         ]
 
         response = llm.invoke(messages)
@@ -182,6 +204,7 @@ def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
 
         return {
             "resume_text": resume_text,
+            "job_description": job_description,
             "task_type": task_type,
             "agent_response": response.content,
         }
@@ -192,18 +215,12 @@ def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
 
 
 if __name__ == "__main__":
-    # Quick local smoke test (requires the Ollama server to be running).
+    # Quick smoke test against the sample documents in data/.
+    # Requires a valid GROQ_API_KEY in .env.
     sample_state: CandidateAgentState = {
         "user_query": "Screen this candidate for the Backend Engineer (C++) role.",
-        "resume_text": (
-            "Manas Dhakad — Software Developer. 2 years experience in C++ and Python. "
-            "Built a multithreaded order-matching engine; strong in DSA (LeetCode 500+). "
-            "Familiar with REST APIs using FastAPI. No production cloud experience."
-        ),
-        "job_description": (
-            "Backend Engineer (C++): requires modern C++ (14/17), memory management, "
-            "concurrency, Linux, and experience with distributed systems on AWS."
-        ),
+        "document_path": os.path.join(RESUME_DIR, "sample_candidate.txt"),
+        "job_description_path": os.path.join(JOB_DESCRIPTION_DIR, "backend_engineer_cpp.txt"),
     }
     result = candidate_agent_node(sample_state)
     print(result["agent_response"])
