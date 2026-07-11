@@ -147,6 +147,13 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# Kira data (candidate PII — never commit)
+data/*.db
+data/evaluations/
+data/resumes/*
+!data/resumes/.gitkeep
+!data/resumes/sample_candidate.txt
+
 # Environments
 .env
 .envrc

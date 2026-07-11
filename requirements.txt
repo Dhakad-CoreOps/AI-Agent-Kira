@@ -2,6 +2,7 @@ pandas
 numpy
 langchain-groq
 langgraph
+langgraph-checkpoint-sqlite
 python-dotenv
 pypdf
 python-docx

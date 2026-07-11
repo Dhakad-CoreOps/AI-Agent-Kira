@@ -20,6 +20,7 @@ from langchain_groq import ChatGroq
 
 from src.exception import CustomException
 from src.logger import logging
+from src.storage.evaluation_store import save_evaluation
 from src.tools.file_reader import file_reader
 
 # ---------------------------------------------------------------------------
@@ -65,7 +66,9 @@ class CandidateAgentState(TypedDict, total=False):
     job_description: Optional[str]
     task_type: Literal["resume_screening", "interview_preparation"]
     resume_text: str
+    candidate_name: str
     agent_response: str
+    evaluation_id: int
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +148,56 @@ def _detect_task_type(user_query: str) -> str:
     return "resume_screening"
 
 
+NAME_EXTRACTION_PROMPT = (
+    "Extract the candidate's full name from the resume below. "
+    "Reply with the name and nothing else — no punctuation, no explanation, no label. "
+    "If no name is present, reply exactly: Unknown Candidate"
+)
+
+
+def _fallback_name(resume_text: str, document_path: Optional[str]) -> str:
+    """Deterministic name guess used when the LLM extraction is unusable."""
+    for line in resume_text.splitlines():
+        candidate = line.strip()
+        # A name line is short and has no resume-section punctuation.
+        if 0 < len(candidate) <= 60 and not any(ch in candidate for ch in ":@|"):
+            return candidate
+    if document_path:
+        return os.path.splitext(os.path.basename(document_path))[0].replace("_", " ").title()
+    return "Unknown Candidate"
+
+
+def _extract_candidate_name(resume_text: str, document_path: Optional[str]) -> str:
+    """Ask the LLM for the candidate's name, falling back to the resume's first line.
+
+    The name is what a recruiter scans the stored evaluations by, so it must never
+    be the reason a run fails — any extraction problem degrades to the fallback.
+    """
+    if not resume_text.strip():
+        return _fallback_name("", document_path)
+
+    try:
+        response = llm.invoke(
+            [
+                SystemMessage(content=NAME_EXTRACTION_PROMPT),
+                HumanMessage(content=resume_text[:2000]),
+            ]
+        )
+        name = response.content.strip().strip(".,'\"")
+
+        # Guard against the model ignoring the instruction and returning prose.
+        if name and len(name) <= 60 and "\n" not in name:
+            logging.info(f"Extracted candidate name: {name}")
+            return name
+
+        logging.warning(f"Name extraction returned an unusable value: {name!r}")
+
+    except Exception as e:
+        logging.warning(f"Name extraction failed, falling back to heuristic: {e}")
+
+    return _fallback_name(resume_text, document_path)
+
+
 def _build_human_message(state: CandidateAgentState, resume_text: str, job_description: str) -> str:
     sections = [f"USER REQUEST:\n{state.get('user_query', '')}"]
 
@@ -200,13 +253,31 @@ def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
         ]
 
         response = llm.invoke(messages)
-        logging.info(f"Candidate Agent completed {task_type}. Response length: {len(response.content)} chars")
+        summary_markdown = response.content
+        logging.info(f"Candidate Agent completed {task_type}. Response length: {len(summary_markdown)} chars")
+
+        candidate_name = state.get("candidate_name") or _extract_candidate_name(
+            resume_text, document_path
+        )
+
+        # Persist the evaluation so it outlives the process: a SQLite row keyed by
+        # candidate name, plus a markdown copy on disk. The row keeps document_path,
+        # which is what lets open_resume() pull up the original CV later.
+        evaluation_id = save_evaluation(
+            candidate_name=candidate_name,
+            task_type=task_type,
+            summary_markdown=summary_markdown,
+            resume_path=document_path,
+            job_description_path=job_description_path,
+        )
 
         return {
             "resume_text": resume_text,
             "job_description": job_description,
             "task_type": task_type,
-            "agent_response": response.content,
+            "candidate_name": candidate_name,
+            "agent_response": summary_markdown,
+            "evaluation_id": evaluation_id,
         }
 
     except Exception as e:
