@@ -5,6 +5,7 @@
     python review.py list       [--min-score N]              List stored evaluations
     python review.py show       <id>                         Print one full evaluation
     python review.py resume     <id>                         Open that candidate's CV
+    python review.py dedupe     [--dry-run]                  Remove duplicate evaluations
 """
 
 import argparse
@@ -12,6 +13,7 @@ import os
 import sys
 
 from src.agents.candidate_agent import RESUME_DIR
+from src.agents.cleanup_agent import cleanup_agent_node
 from src.pipeline.hr_graph import run_candidate
 from src.storage.evaluation_store import get_evaluation, list_evaluations, open_resume
 from src.tools.file_reader import SUPPORTED_TEXT_EXTENSIONS
@@ -125,6 +127,15 @@ def main() -> None:
     p_resume = sub.add_parser("resume", help="Open the resume behind an evaluation")
     p_resume.add_argument("id", type=int)
 
+    p_dedupe = sub.add_parser(
+        "dedupe", help="Remove duplicate evaluations (same resume + job description re-runs)"
+    )
+    p_dedupe.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be deleted without touching the database",
+    )
+
     args = parser.parse_args()
 
     if args.command == "screen":
@@ -137,6 +148,9 @@ def main() -> None:
         _cmd_show(args)
     elif args.command == "resume":
         _cmd_resume(args)
+    elif args.command == "dedupe":
+        result = cleanup_agent_node({"dry_run": args.dry_run})
+        print(result["agent_response"])
 
 
 if __name__ == "__main__":

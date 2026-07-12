@@ -170,7 +170,7 @@ def list_evaluations(min_score: Optional[int] = None) -> List[Dict[str, Any]]:
         init_db()
         query = (
             "SELECT id, candidate_name, match_score, recommendation, "
-            "resume_path, created_at FROM evaluations"
+            "resume_path, job_description_path, markdown_path, created_at FROM evaluations"
         )
         params: tuple = ()
         if min_score is not None:
@@ -183,6 +183,37 @@ def list_evaluations(min_score: Optional[int] = None) -> List[Dict[str, Any]]:
 
     except Exception as e:
         logging.error(f"Failed to list evaluations: {e}")
+        raise CustomException(e, sys)
+
+
+def delete_evaluations(evaluation_ids: List[int]) -> int:
+    """Delete evaluations by id, along with their markdown report files.
+    Returns the number of rows removed."""
+    if not evaluation_ids:
+        return 0
+    try:
+        init_db()
+        placeholders = ",".join("?" for _ in evaluation_ids)
+        with _connect() as connection:
+            rows = connection.execute(
+                f"SELECT id, markdown_path FROM evaluations WHERE id IN ({placeholders})",
+                tuple(evaluation_ids),
+            ).fetchall()
+            connection.execute(
+                f"DELETE FROM evaluations WHERE id IN ({placeholders})",
+                tuple(evaluation_ids),
+            )
+
+        for row in rows:
+            markdown_path = row["markdown_path"]
+            if markdown_path and os.path.exists(markdown_path):
+                os.remove(markdown_path)
+
+        logging.info(f"Deleted {len(rows)} evaluation(s): {[row['id'] for row in rows]}")
+        return len(rows)
+
+    except Exception as e:
+        logging.error(f"Failed to delete evaluations {evaluation_ids}: {e}")
         raise CustomException(e, sys)
 
 
