@@ -50,17 +50,12 @@ def run_candidate(
     user_query: str,
     document_path: Optional[str] = None,
     job_description_path: Optional[str] = None,
-    task_type: Optional[str] = None,
     thread_id: str = "default",
 ) -> Dict[str, Any]:
     """Run one candidate through the graph.
 
     thread_id scopes the checkpoint history — use one per candidate so their
-    screening and interview-prep runs share a resumable conversation.
-
-    task_type must be passed explicitly by callers that reuse a thread. Input
-    state is merged over the checkpointed state, so without it a second run on
-    the same thread would inherit the previous run's task_type and repeat it.
+    screening runs share a resumable conversation.
     """
     try:
         graph = build_graph()
@@ -69,8 +64,6 @@ def run_candidate(
             "document_path": document_path,
             "job_description_path": job_description_path,
         }
-        if task_type:
-            state["task_type"] = task_type  # type: ignore[typeddict-item]
         config = {"configurable": {"thread_id": thread_id}}
 
         logging.info(f"Running HR graph on thread '{thread_id}' for document: {document_path}")

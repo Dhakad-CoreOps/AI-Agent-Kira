@@ -1,18 +1,15 @@
 """Agent 1: The Candidate Agent.
 
 An objective AI Technical Recruiter node for the LangGraph multi-agent HR system.
-Handles two execution paths driven by the shared graph state:
-
-1. RESUME SCREENING       -> structured markdown evaluation sheet (match score,
-                             strengths, gaps, hire/no-hire recommendation).
-2. INTERVIEW PREPARATION  -> 3 customized deep-technical interview questions.
+Screens a resume against a job description and produces a structured markdown
+evaluation sheet (match score, strengths, gaps, hire/no-hire recommendation).
 
 Uses Groq's free API (GROQ_API_KEY loaded from the project .env file).
 """
 
 import os
 import sys
-from typing import Literal, Optional, TypedDict
+from typing import Optional, TypedDict
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -64,7 +61,6 @@ class CandidateAgentState(TypedDict, total=False):
     document_path: Optional[str]
     job_description_path: Optional[str]
     job_description: Optional[str]
-    task_type: Literal["resume_screening", "interview_preparation"]
     resume_text: str
     candidate_name: str
     agent_response: str
@@ -105,49 +101,10 @@ A single verdict — **Hire** or **No Hire** — followed by a 2-3 sentence rati
 Be strict and objective. If the resume text is missing or empty, say so instead
 of guessing."""
 
-INTERVIEW_PREP_PROMPT = BASE_SYSTEM_PROMPT + """
-
-TASK: INTERVIEW PREPARATION
-Generate EXACTLY 3 highly customized technical interview questions for this
-candidate, based strictly on the strengths and gaps visible in their background.
-
-Rules:
-- Target deep technical concepts relevant to the applicant's stack, such as
-  C++ memory management (RAII, smart pointers, move semantics), Data Structures
-  and Algorithms (complexity trade-offs, real applications), or backend
-  architecture (caching, concurrency, database design).
-- Each question must reference something specific from the candidate's resume
-  (a project, technology, or claimed skill) — no generic textbook questions.
-- Prefer probing questions in areas where the resume shows gaps, to verify depth.
-
-Output markdown with EXACTLY these sections:
-
-## Customized Interview Questions
-
-### Question 1
-The question, then a one-line note on *why this question* for this candidate.
-
-### Question 2
-Same format.
-
-### Question 3
-Same format."""
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-INTERVIEW_KEYWORDS = ("interview", "question", "prepare", "prep", "ask the candidate")
-
-
-def _detect_task_type(user_query: str) -> str:
-    """Infer the execution path from the user query when the graph has not set one."""
-    query = (user_query or "").lower()
-    if any(keyword in query for keyword in INTERVIEW_KEYWORDS):
-        return "interview_preparation"
-    return "resume_screening"
-
-
 NAME_EXTRACTION_PROMPT = (
     "Extract the candidate's full name from the resume below. "
     "Reply with the name and nothing else — no punctuation, no explanation, no label. "
@@ -217,8 +174,8 @@ def _build_human_message(state: CandidateAgentState, resume_text: str, job_descr
 # ---------------------------------------------------------------------------
 def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
     """Candidate Agent node. Reads the shared state, optionally loads a document
-    via the file_reader tool, routes to the correct execution path, and writes
-    the model's answer back into the state under 'agent_response'."""
+    via the file_reader tool, screens the resume, and writes the model's answer
+    back into the state under 'agent_response'."""
     try:
         user_query = state.get("user_query", "")
         document_path = state.get("document_path")
@@ -238,23 +195,14 @@ def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
             logging.info(f"Candidate Agent invoking file_reader tool for job description: {job_description_path}")
             job_description = file_reader.invoke({"file_path": job_description_path})
 
-        task_type = state.get("task_type") or _detect_task_type(user_query)
-        logging.info(f"Candidate Agent execution path: {task_type}")
-
-        if task_type == "interview_preparation":
-            system_prompt = INTERVIEW_PREP_PROMPT
-        else:
-            task_type = "resume_screening"
-            system_prompt = RESUME_SCREENING_PROMPT
-
         messages = [
-            SystemMessage(content=system_prompt),
+            SystemMessage(content=RESUME_SCREENING_PROMPT),
             HumanMessage(content=_build_human_message(state, resume_text, job_description)),
         ]
 
         response = llm.invoke(messages)
         summary_markdown = response.content
-        logging.info(f"Candidate Agent completed {task_type}. Response length: {len(summary_markdown)} chars")
+        logging.info(f"Candidate Agent completed screening. Response length: {len(summary_markdown)} chars")
 
         candidate_name = state.get("candidate_name") or _extract_candidate_name(
             resume_text, document_path
@@ -265,7 +213,6 @@ def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
         # which is what lets open_resume() pull up the original CV later.
         evaluation_id = save_evaluation(
             candidate_name=candidate_name,
-            task_type=task_type,
             summary_markdown=summary_markdown,
             resume_path=document_path,
             job_description_path=job_description_path,
@@ -274,7 +221,6 @@ def candidate_agent_node(state: CandidateAgentState) -> CandidateAgentState:
         return {
             "resume_text": resume_text,
             "job_description": job_description,
-            "task_type": task_type,
             "candidate_name": candidate_name,
             "agent_response": summary_markdown,
             "evaluation_id": evaluation_id,

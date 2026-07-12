@@ -26,6 +26,10 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 DB_PATH = os.path.join(DATA_DIR, "kira.db")
 EVALUATION_DIR = os.path.join(DATA_DIR, "evaluations")
 
+# The system only does resume screening; the task_type column is kept in the
+# schema so existing rows stay readable, and every new row records this value.
+TASK_TYPE = "resume_screening"
+
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS evaluations (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,20 +90,18 @@ def _slugify(name: str) -> str:
 
 def _write_markdown(
     candidate_name: str,
-    task_type: str,
     summary_markdown: str,
     resume_path: Optional[str],
     timestamp: datetime,
 ) -> str:
     os.makedirs(EVALUATION_DIR, exist_ok=True)
 
-    filename = f"{_slugify(candidate_name)}_{task_type}_{timestamp.strftime('%Y%m%d_%H%M%S')}.md"
+    filename = f"{_slugify(candidate_name)}_{TASK_TYPE}_{timestamp.strftime('%Y%m%d_%H%M%S')}.md"
     markdown_path = os.path.join(EVALUATION_DIR, filename)
 
     header = [
         f"# {candidate_name}",
         "",
-        f"- **Task:** {task_type}",
         f"- **Generated:** {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
     if resume_path:
@@ -116,7 +118,6 @@ def _write_markdown(
 
 def save_evaluation(
     candidate_name: str,
-    task_type: str,
     summary_markdown: str,
     resume_path: Optional[str] = None,
     job_description_path: Optional[str] = None,
@@ -127,7 +128,7 @@ def save_evaluation(
         timestamp = datetime.now()
 
         markdown_path = _write_markdown(
-            candidate_name, task_type, summary_markdown, resume_path, timestamp
+            candidate_name, summary_markdown, resume_path, timestamp
         )
 
         with _connect() as connection:
@@ -141,7 +142,7 @@ def save_evaluation(
                 """,
                 (
                     candidate_name,
-                    task_type,
+                    TASK_TYPE,
                     parse_match_score(summary_markdown),
                     parse_recommendation(summary_markdown),
                     summary_markdown,
@@ -154,7 +155,7 @@ def save_evaluation(
             evaluation_id = cursor.lastrowid
 
         logging.info(
-            f"Saved evaluation #{evaluation_id} for '{candidate_name}' ({task_type}) -> {markdown_path}"
+            f"Saved evaluation #{evaluation_id} for '{candidate_name}' -> {markdown_path}"
         )
         return evaluation_id
 
@@ -168,7 +169,7 @@ def list_evaluations(min_score: Optional[int] = None) -> List[Dict[str, Any]]:
     try:
         init_db()
         query = (
-            "SELECT id, candidate_name, task_type, match_score, recommendation, "
+            "SELECT id, candidate_name, match_score, recommendation, "
             "resume_path, created_at FROM evaluations"
         )
         params: tuple = ()
