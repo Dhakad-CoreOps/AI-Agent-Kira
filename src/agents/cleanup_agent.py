@@ -24,10 +24,12 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from src.agents.candidate_agent import llm
+from src.agents.base_agent import get_llm
 from src.exception import CustomException
 from src.logger import logging
 from src.storage.evaluation_store import delete_evaluations, list_evaluations
+
+llm = get_llm(temperature=0.2)
 
 
 class CleanupAgentState(TypedDict, total=False):

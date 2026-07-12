@@ -11,40 +11,19 @@ import os
 import sys
 from typing import Optional, TypedDict
 
-from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_groq import ChatGroq
 
+from src.agents.base_agent import DATA_DIR, get_llm
 from src.exception import CustomException
 from src.logger import logging
 from src.storage.evaluation_store import save_evaluation
 from src.tools.file_reader import file_reader
 
-# ---------------------------------------------------------------------------
-# LLM configuration (Groq free tier — key comes from .env, never hardcoded)
-# ---------------------------------------------------------------------------
-load_dotenv()
-
-GROQ_MODEL = "llama-3.1-8b-instant"
-
-# Default document locations, resolved from the project root so they work no
-# matter which directory Python is launched from.
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+# Default document locations under the shared data directory.
 RESUME_DIR = os.path.join(DATA_DIR, "resumes")
 JOB_DESCRIPTION_DIR = os.path.join(DATA_DIR, "job_descriptions")
 
-if not os.getenv("GROQ_API_KEY"):
-    logging.error("GROQ_API_KEY is missing from the environment/.env file")
-    raise EnvironmentError(
-        "GROQ_API_KEY is not set. Add it to the .env file in the project root "
-        "(get a free key at https://console.groq.com/keys)."
-    )
-
-llm = ChatGroq(
-    model=GROQ_MODEL,
-    temperature=0.2,
-)
+llm = get_llm(temperature=0.2)
 
 # The agent is equipped with the file_reader tool. The node below invokes it
 # deterministically whenever the state carries a document_path, which is more

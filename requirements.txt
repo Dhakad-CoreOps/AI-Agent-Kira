@@ -6,4 +6,5 @@ langgraph-checkpoint-sqlite
 python-dotenv
 pypdf
 python-docx
+streamlit
 -e .
