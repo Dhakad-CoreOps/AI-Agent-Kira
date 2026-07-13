@@ -223,3 +223,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# FAQ retrieval embedding cache
+data/.policy_index_cache.json

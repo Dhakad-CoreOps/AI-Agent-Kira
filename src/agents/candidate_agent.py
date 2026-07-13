@@ -4,7 +4,8 @@ An objective AI Technical Recruiter node for the LangGraph multi-agent HR system
 Screens a resume against a job description and produces a structured markdown
 evaluation sheet (match score, strengths, gaps, hire/no-hire recommendation).
 
-Uses Groq's free API (GROQ_API_KEY loaded from the project .env file).
+Uses Groq's free API (GROQ_API_KEY loaded from the project .env file), with a
+local Ollama model as automatic fallback when Groq is unavailable.
 """
 
 import os
@@ -27,9 +28,10 @@ llm = get_llm(temperature=0.2)
 
 # The agent is equipped with the file_reader tool. The node below invokes it
 # deterministically whenever the state carries a document_path, which is more
-# reliable for this fixed workflow than LLM-driven tool calling.
+# reliable for this fixed workflow than LLM-driven tool calling. Tools are
+# bound inside the factory so both Groq and the local fallback carry them.
 TOOLS = [file_reader]
-llm_with_tools = llm.bind_tools(TOOLS)
+llm_with_tools = get_llm(temperature=0.2, tools=TOOLS)
 
 
 # ---------------------------------------------------------------------------

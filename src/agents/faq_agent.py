@@ -5,7 +5,8 @@ Answers employee questions strictly from the official policy documents in
 data/policies (every .md/.txt/.pdf/.docx in that folder), refusing to invent
 policies that are not in the text.
 
-Uses Groq's free API (GROQ_API_KEY loaded from the project .env file).
+Uses Groq's free API (GROQ_API_KEY loaded from the project .env file), with a
+local Ollama model as automatic fallback when Groq is unavailable.
 """
 
 import os
@@ -17,6 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.agents.base_agent import DATA_DIR, get_llm
 from src.exception import CustomException
 from src.logger import logging
+from src.retrieval.policy_index import get_policy_index
 from src.tools.file_reader import SUPPORTED_TEXT_EXTENSIONS, file_reader
 
 # Default policies folder under the shared data directory. Every supported
@@ -40,9 +42,9 @@ class FAQAgentState(TypedDict, total=False):
     policies_dir: Optional[str]
     # Optional single-file override: answer from just this document instead.
     handbook_path: Optional[str]
-    # Pre-extracted policy text; when set, no files are read (lets the UI cache
-    # PDF extraction across chat turns).
-    handbook_text: str
+    # Pre-extracted (filename, text) pairs; when set, no files are read (lets
+    # the UI cache PDF extraction across chat turns). Retrieval still applies.
+    policy_documents: List[Tuple[str, str]]
     # Prior conversation turns as (role, content) pairs, role being "user" or
     # "assistant". Lets the chatbot UI carry follow-up context between turns.
     chat_history: List[Tuple[str, str]]
@@ -59,15 +61,16 @@ FALLBACK_ANSWER = (
 
 FAQ_SYSTEM_PROMPT = f"""You are an internal corporate HR Assistant for an HR system.
 You answer employees' questions about company policy using ONLY the official
-policy documents provided in the message below. Each document is delimited by
-an "=== POLICY DOCUMENT: <filename> ===" header.
+policy excerpts provided in the message below. The excerpts were selected as
+the most relevant parts of the company's policy documents for this question.
+Each excerpt is delimited by an "=== POLICY EXCERPT: <filename> ===" header.
 
 STRICT RULES:
-1. Base every statement on the policy document text. Quote or paraphrase it
+1. Base every statement on the policy excerpt text. Quote or paraphrase it
    faithfully.
 2. NEVER invent, assume, or generalise a policy that is not explicitly written
-   in the documents — not even if it is a common policy at other companies.
-3. If none of the documents contain the answer, reply with exactly:
+   in the excerpts — not even if it is a common policy at other companies.
+3. If none of the excerpts contain the answer, reply with exactly:
    "{FALLBACK_ANSWER}"
 4. Keep a warm but professional tone, and format the answer as clean markdown
    (short headings or bullet points where they help readability).
@@ -110,17 +113,32 @@ def combine_policy_documents(documents: List[Tuple[str, str]]) -> str:
     """Merge (filename, text) pairs into one prompt block, each document under
     the header format the system prompt tells the model to expect."""
     return "\n\n".join(
-        f"=== POLICY DOCUMENT: {name} ===\n\n{text}" for name, text in documents
+        f"=== POLICY EXCERPT: {name} ===\n\n{text}" for name, text in documents
     )
 
 
-def _build_human_message(user_query: str, handbook_text: str) -> str:
+def select_relevant_excerpts(
+    documents: List[Tuple[str, str]], user_query: str
+) -> str:
+    """Retrieve only the policy chunks relevant to this question, combined into
+    one prompt block. Keeps the prompt a few thousand tokens instead of the
+    whole corpus (~50K), which Groq's free tier rejects as too large."""
+    index = get_policy_index(documents)
+    excerpts = index.retrieve(user_query)
+    logging.info(
+        f"FAQ Agent retrieved {len(excerpts)} excerpt(s) from "
+        f"{len({name for name, _ in excerpts})} document(s) for the query"
+    )
+    return combine_policy_documents(excerpts)
+
+
+def _build_human_message(user_query: str, policy_excerpts: str) -> str:
     sections = [f"EMPLOYEE QUESTION:\n{user_query}"]
 
-    if handbook_text:
-        sections.append(f"OFFICIAL POLICY DOCUMENTS:\n{handbook_text}")
+    if policy_excerpts:
+        sections.append(f"OFFICIAL POLICY EXCERPTS:\n{policy_excerpts}")
     else:
-        sections.append("OFFICIAL POLICY DOCUMENTS:\n(No policy text was provided.)")
+        sections.append("OFFICIAL POLICY EXCERPTS:\n(No policy text was provided.)")
 
     return "\n\n---\n\n".join(sections)
 
@@ -136,24 +154,23 @@ def faq_agent_node(state: FAQAgentState) -> FAQAgentState:
         user_query = state.get("user_query", "")
         policies_dir = state.get("policies_dir") or DEFAULT_POLICIES_DIR
         handbook_path = state.get("handbook_path")
-        handbook_text = state.get("handbook_text", "")
         chat_history = state.get("chat_history", [])
 
         logging.info(f"FAQ Agent invoked. Query: {user_query!r}, policies_dir: {policies_dir!r}")
 
-        # Load the policy text unless an upstream node (or the UI cache) has
-        # already supplied it: a single file when handbook_path is set,
-        # otherwise every supported document in the policies folder. Invoked
-        # deterministically, which is more reliable for this fixed workflow
-        # than LLM-driven tool calling.
-        if not handbook_text:
-            if handbook_path:
-                logging.info(f"FAQ Agent invoking file_reader tool for single document: {handbook_path}")
-                handbook_text = combine_policy_documents(
-                    [(os.path.basename(handbook_path), file_reader.invoke({"file_path": handbook_path}))]
-                )
-            else:
-                handbook_text = combine_policy_documents(load_policy_documents(policies_dir))
+        # Get the policy documents: from a single file when handbook_path is
+        # set, otherwise from the state (an upstream node or the UI cache
+        # already extracted them) or every supported document in the policies
+        # folder. Then retrieve only the chunks relevant to this question —
+        # sending the whole corpus is over Groq's request limit.
+        if handbook_path:
+            logging.info(f"FAQ Agent invoking file_reader tool for single document: {handbook_path}")
+            documents = [
+                (os.path.basename(handbook_path), file_reader.invoke({"file_path": handbook_path}))
+            ]
+        else:
+            documents = state.get("policy_documents") or load_policy_documents(policies_dir)
+        policy_excerpts = select_relevant_excerpts(documents, user_query)
 
         # Replay recent turns (capped so the handbook + history stay well inside
         # the model's context window) before the current question. Only the
@@ -164,15 +181,16 @@ def faq_agent_node(state: FAQAgentState) -> FAQAgentState:
                 messages.append(AIMessage(content=content))
             else:
                 messages.append(HumanMessage(content=content))
-        messages.append(HumanMessage(content=_build_human_message(user_query, handbook_text)))
+        messages.append(HumanMessage(content=_build_human_message(user_query, policy_excerpts)))
 
         response = llm.invoke(messages)
         answer_markdown = response.content
         logging.info(f"FAQ Agent completed. Response length: {len(answer_markdown)} chars")
 
+        # policy_excerpts is deliberately not returned: it's specific to this
+        # question and must not be replayed for the next one.
         return {
             "policies_dir": policies_dir,
-            "handbook_text": handbook_text,
             "final_response": answer_markdown,
         }
 

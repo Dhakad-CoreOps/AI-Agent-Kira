@@ -1,13 +1,13 @@
 # Kira — AI HR Agent System
 
-A multi-agent HR assistant built with **LangGraph** and **Groq** (`llama-3.1-8b-instant`, free tier). Kira screens job candidates against job descriptions, answers employee policy questions from official documents, and keeps its own evaluation store clean.
+A multi-agent HR assistant built with **LangGraph** and **Groq** (`llama-3.1-8b-instant`, free tier), with a **local Ollama fallback** (`llama3.2:3b`) that takes over automatically whenever the Groq API is unavailable (rate limit, outage, missing key). Kira screens job candidates against job descriptions, answers employee policy questions from official documents, and keeps its own evaluation store clean.
 
 ## Agents
 
 | Agent | File | What it does |
 |---|---|---|
 | **Candidate Agent** | `src/agents/candidate_agent.py` | Screens a resume against a job description and produces a structured evaluation sheet (match score, strengths, gaps, hire/no-hire). Every evaluation is persisted to SQLite + a markdown report. |
-| **FAQ Agent** | `src/agents/faq_agent.py` | Internal HR assistant. Answers employee questions **strictly** from the policy documents in `data/policies/` — if a policy isn't in the documents, it says so and refers the employee to HR instead of guessing. |
+| **FAQ Agent** | `src/agents/faq_agent.py` | Internal HR assistant. Answers employee questions **strictly** from the policy documents in `data/policies/` — if a policy isn't in the documents, it says so and refers the employee to HR instead of guessing. Uses local semantic retrieval (`src/retrieval/policy_index.py`) to send only the relevant policy excerpts to the model. |
 | **Cleanup Agent** | `src/agents/cleanup_agent.py` | Deduplicates the evaluation store: deletes exact re-runs, flags fuzzy name matches for manual review. |
 
 All agents are LangGraph node functions sharing common setup (LLM factory, paths, API-key check) from `src/agents/base_agent.py`.
@@ -25,6 +25,25 @@ Create a `.env` file in the project root with your free Groq API key ([get one h
 ```
 GROQ_API_KEY=your_key_here
 ```
+
+### Local models (optional but recommended)
+
+Install [Ollama](https://ollama.com/download) and pull two small models:
+
+```bash
+ollama pull llama3.2:3b        # fallback chat model
+ollama pull nomic-embed-text   # embeddings for FAQ retrieval
+```
+
+If a Groq call fails for any reason (rate limit exceeded, network down, key
+missing), the agents automatically retry the same request on the local chat
+model — no code change or restart needed.
+
+The FAQ agent embeds the policy documents locally with `nomic-embed-text` and
+sends only the excerpts relevant to each question to the LLM (the full corpus
+is ~50K tokens, which Groq's free tier rejects). Embeddings are cached in
+`data/.policy_index_cache.json` and only rebuilt when a policy file changes.
+Without Ollama, retrieval degrades to keyword matching instead of failing.
 
 ## Usage
 
@@ -67,6 +86,7 @@ python review.py dedupe [--dry-run]                  # Remove duplicate evaluati
     │   ├── faq_agent.py        # Agent 2 — policy FAQ
     │   └── cleanup_agent.py    # Evaluation store deduplication
     ├── pipeline/hr_graph.py    # LangGraph wiring + SQLite checkpointing
+    ├── retrieval/policy_index.py # Chunking + local embeddings + top-k retrieval
     ├── storage/evaluation_store.py
     ├── tools/file_reader.py    # .txt/.md/.pdf/.docx text extraction tool
     ├── exception.py            # Custom exception with file/line context
@@ -77,6 +97,7 @@ python review.py dedupe [--dry-run]                  # Remove duplicate evaluati
 
 - **LangGraph** — agent orchestration with durable SQLite checkpointing
 - **langchain-groq** — `llama-3.1-8b-instant` via Groq's free API
+- **langchain-ollama** — local `llama3.2:3b` fallback when Groq is unavailable, plus `nomic-embed-text` embeddings for FAQ retrieval
 - **Streamlit** — FAQ chatbot UI
 - **SQLite** — evaluation store and graph checkpoints
 - **pypdf / python-docx** — document text extraction

@@ -1,6 +1,7 @@
 pandas
 numpy
 langchain-groq
+langchain-ollama
 langgraph
 langgraph-checkpoint-sqlite
 python-dotenv

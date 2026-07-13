@@ -17,10 +17,10 @@ import streamlit as st
 from src.agents.faq_agent import (
     DEFAULT_POLICIES_DIR,
     SUPPORTED_POLICY_EXTENSIONS,
-    combine_policy_documents,
     faq_agent_node,
     load_policy_documents,
 )
+from src.retrieval.policy_index import get_policy_index
 
 st.set_page_config(page_title="Kira HR — FAQ Assistant", page_icon="💬")
 
@@ -44,6 +44,13 @@ def _load_policies(policies_dir: str, fingerprint) -> List[Tuple[str, str]]:
     return load_policy_documents(policies_dir)
 
 
+@st.cache_resource(show_spinner="Indexing policy documents…")
+def _warm_index(policies_dir: str, fingerprint) -> None:
+    """Build the semantic index up-front (embeddings are cached on disk), so
+    the first question doesn't pay the indexing cost."""
+    get_policy_index(_load_policies(policies_dir, fingerprint))
+
+
 # ---------------------------------------------------------------------------
 # Sidebar — policy folder and chat controls
 # ---------------------------------------------------------------------------
@@ -60,7 +67,9 @@ with st.sidebar:
 
     documents: List[Tuple[str, str]] = []
     try:
-        documents = _load_policies(policies_dir, _folder_fingerprint(policies_dir))
+        fingerprint = _folder_fingerprint(policies_dir)
+        documents = _load_policies(policies_dir, fingerprint)
+        _warm_index(policies_dir, fingerprint)
         st.success(f"{len(documents)} policy document(s) loaded")
         for name, _ in documents:
             st.caption(f"📄 {name}")
@@ -115,8 +124,9 @@ if user_query := st.chat_input("e.g. How many paid leave days do I get?"):
                         "user_query": user_query,
                         "policies_dir": policies_dir,
                         # Pass the cached extraction so PDFs are not re-parsed
-                        # on every question.
-                        "handbook_text": combine_policy_documents(documents),
+                        # on every question; the agent retrieves only the
+                        # chunks relevant to this question from them.
+                        "policy_documents": documents,
                         "chat_history": [
                             (m["role"], m["content"]) for m in st.session_state.messages
                         ],
